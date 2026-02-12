@@ -10,7 +10,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./calendar.db:/app/calendar.db
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/sse"]
       interval: 30s

@@ -36,7 +36,9 @@ class Event(Base):
         return f"Event(id={self.id!r}, summary={self.summary!r}, start={self.start!r})"
 
 # Database setup
-DATABASE_URL = "sqlite:///./calendar.db"
+import os
+os.makedirs("data", exist_ok=True)
+DATABASE_URL = "sqlite:///./data/calendar.db"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

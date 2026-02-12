@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  fast-calendar-mcp:
+    build: .
+    container_name: fast-calendar-mcp
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./calendar.db:/app/calendar.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/sse"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

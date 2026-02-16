@@ -94,8 +94,12 @@ async def handle_call_tool(
         return [types.TextContent(type="text", text=str(calendars))]
 
     elif name == "list_events":
-        start_date = datetime.datetime.fromisoformat(arguments["start_date"])
-        end_date = datetime.datetime.fromisoformat(arguments["end_date"])
+        start_date_raw = arguments["start_date"]
+        end_date_raw = arguments["end_date"]
+        start_date = datetime.datetime.fromisoformat(start_date_raw)
+        end_date = datetime.datetime.fromisoformat(end_date_raw)
+        if "T" not in end_date_raw:
+            end_date += datetime.timedelta(days=1)
         calendar_name = arguments.get("calendar_name")
         events = await asyncio.to_thread(caldav_wrapper.list_events, start_date, end_date, calendar_name)
         return [types.TextContent(type="text", text=str(events))]

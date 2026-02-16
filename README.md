@@ -65,7 +65,7 @@ This server exposes the following tools to MCP clients:
 | Tool | Description | Arguments |
 |------|-------------|-----------|
 | `list_calendars` | List available calendars. | None |
-| `list_events` | List events within a date range. | `start_date` (ISO), `end_date` (ISO), `calendar_name` (optional) |
+| `list_events` | List events within a date range. | `start_date` (ISO), `end_date` (ISO, date-only values include the full day), `calendar_name` (optional) |
 | `create_event` | Create a new event. | `calendar_name`, `summary`, `start`, `end`, `description` (opt), `location` (opt) |
 | `delete_event` | Delete an event by UID. | `calendar_name`, `uid` |
 | `sync_calendar` | Force a sync with the remote server. | None |

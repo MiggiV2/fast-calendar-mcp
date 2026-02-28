@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from src.db import Calendar, Event, SessionLocal, init_db
 import icalendar
 from dateutil import parser
+from dateutil.rrule import rrulestr
 import pytz
 
 class CalDAVWrapper:
@@ -61,12 +62,9 @@ class CalDAVWrapper:
                         db_cal.name = cal.name
                         session.commit()
 
-                # Sync events
-                # For simplicity in this MCP, we fetch all events. 
-                # In production, use sync-token or time-range.
+                # Sync events — wipe and reinsert to handle recurring event changes cleanly
                 events = cal.events()
-                existing_uids = {e.uid for e in db_cal.events}
-                fetched_uids = set()
+                session.query(Event).filter(Event.calendar_id == db_cal.id).delete()
 
                 for event in events:
                     try:
@@ -76,8 +74,6 @@ class CalDAVWrapper:
                         for component in cal_obj.walk():
                             if component.name == "VEVENT":
                                 uid = str(component.get('uid'))
-                                fetched_uids.add(uid)
-                                
                                 summary = str(component.get('summary', ''))
                                 description = str(component.get('description', ''))
                                 location = str(component.get('location', ''))
@@ -85,7 +81,7 @@ class CalDAVWrapper:
                                 dtstart = component.get('dtstart').dt
                                 dtend = component.get('dtend').dt if component.get('dtend') else dtstart
 
-                                # Normalize to UTC naive for DB
+                                # Normalize to UTC naive datetime
                                 if isinstance(dtstart, datetime.datetime):
                                     if dtstart.tzinfo:
                                         dtstart = dtstart.astimezone(pytz.UTC).replace(tzinfo=None)
@@ -98,34 +94,21 @@ class CalDAVWrapper:
                                 elif isinstance(dtend, datetime.date):
                                     dtend = datetime.datetime.combine(dtend, datetime.time.min)
 
-                                db_event = session.query(Event).filter(Event.uid == uid, Event.calendar_id == db_cal.id).first()
-                                if db_event:
-                                    # Update
-                                    db_event.summary = summary
-                                    db_event.description = description
-                                    db_event.start = dtstart
-                                    db_event.end = dtend
-                                    db_event.location = location
-                                else:
-                                    # Create
-                                    db_event = Event(
-                                        calendar_id=db_cal.id,
-                                        uid=uid,
-                                        summary=summary,
-                                        description=description,
-                                        start=dtstart,
-                                        end=dtend,
-                                        location=location
-                                    )
-                                    session.add(db_event)
+                                rrule_prop = component.get('rrule')
+                                rrule_str = rrule_prop.to_ical().decode('utf-8') if rrule_prop else None
+                                session.add(Event(
+                                    calendar_id=db_cal.id,
+                                    uid=uid,
+                                    summary=summary,
+                                    description=description,
+                                    start=dtstart,
+                                    end=dtend,
+                                    location=location,
+                                    rrule=rrule_str
+                                ))
                     except Exception as e:
                         print(f"Error syncing event {event}: {e}")
                         continue
-                
-                # Remove events that no longer exist on server
-                to_delete = existing_uids - fetched_uids
-                if to_delete:
-                    session.query(Event).filter(Event.uid.in_(to_delete), Event.calendar_id == db_cal.id).delete(synchronize_session=False)
                 
                 session.commit()
 
@@ -146,26 +129,37 @@ class CalDAVWrapper:
     def list_events(self, start_date: datetime.datetime, end_date: datetime.datetime, calendar_name: Optional[str] = None) -> List[dict]:
         session = SessionLocal()
         try:
-            query = session.query(Event).join(Calendar).filter(
-                Event.start >= start_date,
-                Event.start <= end_date
-            )
-            
+            base_query = session.query(Event).join(Calendar)
             if calendar_name:
-                query = query.filter(Calendar.name == calendar_name)
-                
-            events = query.all()
-            return [{
-                "uid": e.uid,
-                "summary": e.summary,
-                "description": e.description,
-                "start": e.start.isoformat(),
-                "end": e.end.isoformat(),
-                "location": e.location,
-                "calendar": e.calendar.name
-            } for e in events]
+                base_query = base_query.filter(Calendar.name == calendar_name)
+
+            results = []
+
+            # Non-recurring events: simple date range filter
+            for e in base_query.filter(Event.rrule == None, Event.start >= start_date, Event.start <= end_date).all():
+                results.append(self._event_to_dict(e, e.start, e.end))
+
+            # Recurring events: expand occurrences within range at query time
+            for e in base_query.filter(Event.rrule != None).all():
+                duration = e.end - e.start
+                rule = rrulestr(e.rrule, dtstart=e.start, ignoretz=True)
+                for occ in rule.between(start_date, end_date, inc=True):
+                    results.append(self._event_to_dict(e, occ, occ + duration))
+
+            return results
         finally:
             session.close()
+
+    def _event_to_dict(self, e: "Event", start: datetime.datetime, end: datetime.datetime) -> dict:
+        return {
+            "uid": e.uid,
+            "summary": e.summary,
+            "description": e.description,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "location": e.location,
+            "calendar": e.calendar.name
+        }
 
     def create_event(self, calendar_name: str, summary: str, start: datetime.datetime, end: datetime.datetime, description: str = "", location: str = ""):
         # Create on server first

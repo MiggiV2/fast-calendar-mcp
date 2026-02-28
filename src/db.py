@@ -1,6 +1,6 @@
 import datetime
 from typing import Optional
-from sqlalchemy import String, DateTime, ForeignKey, Text, create_engine
+from sqlalchemy import String, DateTime, ForeignKey, Text, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 class Base(DeclarativeBase):
@@ -29,6 +29,7 @@ class Event(Base):
     start: Mapped[datetime.datetime] = mapped_column(DateTime)
     end: Mapped[datetime.datetime] = mapped_column(DateTime)
     location: Mapped[Optional[str]] = mapped_column(String(255))
+    rrule: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     calendar: Mapped["Calendar"] = relationship(back_populates="events")
 
@@ -44,3 +45,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Inline migration: add rrule column if it doesn't exist yet
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE events ADD COLUMN rrule TEXT"))
+            conn.commit()
+        except Exception:
+            pass  # Column already exists

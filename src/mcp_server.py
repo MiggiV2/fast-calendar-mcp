@@ -29,7 +29,7 @@ def _normalize_to_naive_utc(dt: datetime.datetime) -> datetime.datetime:
 async def handle_list_tools() -> list[types.Tool]:
     return [
         types.Tool(
-            name="list_calendars",
+            name="calendar_list",
             description="List all available calendars",
             inputSchema={
                 "type": "object",
@@ -37,7 +37,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="list_events",
+            name="calendar_list_events",
             description="List events within a date range",
             inputSchema={
                 "type": "object",
@@ -50,7 +50,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="create_event",
+            name="calendar_create_event",
             description="Create a new event",
             inputSchema={
                 "type": "object",
@@ -66,7 +66,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="delete_event",
+            name="calendar_delete_event",
             description="Delete an event by UID",
             inputSchema={
                 "type": "object",
@@ -78,7 +78,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="sync_calendar",
+            name="calendar_sync",
             description="Force sync with CalDAV server",
             inputSchema={
                 "type": "object",
@@ -94,11 +94,11 @@ async def handle_call_tool(
     if not caldav_wrapper:
         return [types.TextContent(type="text", text="CalDAV wrapper not initialized. Check credentials.")]
 
-    if name == "list_calendars":
+    if name in ("calendar_list", "list_calendars"):
         calendars = await asyncio.to_thread(caldav_wrapper.list_calendars)
         return [types.TextContent(type="text", text=str(calendars))]
 
-    elif name == "list_events":
+    elif name in ("calendar_list_events", "list_events"):
         start_date_raw = arguments["start_date"]
         end_date_raw = arguments["end_date"]
         start_date = _normalize_to_naive_utc(datetime.datetime.fromisoformat(start_date_raw))
@@ -109,7 +109,7 @@ async def handle_call_tool(
         events = await asyncio.to_thread(caldav_wrapper.list_events, start_date, end_date, calendar_name)
         return [types.TextContent(type="text", text=str(events))]
 
-    elif name == "create_event":
+    elif name in ("calendar_create_event", "calendar_create", "create_event"):
         start = _normalize_to_naive_utc(datetime.datetime.fromisoformat(arguments["start"]))
         end = _normalize_to_naive_utc(datetime.datetime.fromisoformat(arguments["end"]))
         await asyncio.to_thread(
@@ -123,11 +123,11 @@ async def handle_call_tool(
         )
         return [types.TextContent(type="text", text="Event created successfully")]
 
-    elif name == "delete_event":
+    elif name in ("calendar_delete_event", "calendar_delete", "delete_event"):
         await asyncio.to_thread(caldav_wrapper.delete_event, arguments["calendar_name"], arguments["uid"])
         return [types.TextContent(type="text", text="Event deleted successfully")]
 
-    elif name == "sync_calendar":
+    elif name in ("calendar_sync", "sync_calendar"):
         await asyncio.to_thread(caldav_wrapper.sync)
         return [types.TextContent(type="text", text="Calendar synced successfully")]
 

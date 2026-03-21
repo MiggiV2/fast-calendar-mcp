@@ -48,12 +48,12 @@ async def run_tests():
                 tools = await session.list_tools()
                 tool_names = [t.name for t in tools.tools]
                 print("Tools:", tool_names)
-                assert "list_calendars" in tool_names
-                assert "create_event" in tool_names
+                assert "calendar_list" in tool_names
+                assert "calendar_create_event" in tool_names
                 
                 # List calendars
                 print("Listing calendars...")
-                result = await session.call_tool("list_calendars", {})
+                result = await session.call_tool("calendar_list", {})
                 print(f"Raw result: {result.content[0].text}")
                 
                 if "CalDAV wrapper not initialized" in result.content[0].text:
@@ -83,7 +83,7 @@ async def run_tests():
                 start = "2023-10-27T10:00:00"
                 end = "2023-10-27T11:00:00"
                 
-                await session.call_tool("create_event", {
+                await session.call_tool("calendar_create_event", {
                     "calendar_name": calendar_name,
                     "summary": summary,
                     "start": start,
@@ -94,7 +94,7 @@ async def run_tests():
                 
                 # Verify event exists
                 print("Verifying event...")
-                result = await session.call_tool("list_events", {
+                result = await session.call_tool("calendar_list_events", {
                     "start_date": "2023-10-27T00:00:00",
                     "end_date": "2023-10-27T23:59:59",
                     "calendar_name": calendar_name
@@ -108,7 +108,7 @@ async def run_tests():
                 
                 # Delete event
                 print("Deleting event...")
-                await session.call_tool("delete_event", {
+                await session.call_tool("calendar_delete_event", {
                     "calendar_name": calendar_name,
                     "uid": target_event["uid"]
                 })
@@ -116,7 +116,7 @@ async def run_tests():
                 
                 # Verify deletion
                 print("Verifying deletion...")
-                result = await session.call_tool("list_events", {
+                result = await session.call_tool("calendar_list_events", {
                     "start_date": "2023-10-27T00:00:00",
                     "end_date": "2023-10-27T23:59:59",
                     "calendar_name": calendar_name

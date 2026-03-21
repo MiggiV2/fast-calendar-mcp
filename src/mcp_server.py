@@ -20,6 +20,11 @@ except Exception as e:
 
 server = Server("fast-calendar-mcp")
 
+def _normalize_to_naive_utc(dt: datetime.datetime) -> datetime.datetime:
+    if dt.tzinfo is not None and dt.utcoffset() is not None:
+        return dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return dt
+
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     return [
@@ -96,8 +101,8 @@ async def handle_call_tool(
     elif name == "list_events":
         start_date_raw = arguments["start_date"]
         end_date_raw = arguments["end_date"]
-        start_date = datetime.datetime.fromisoformat(start_date_raw)
-        end_date = datetime.datetime.fromisoformat(end_date_raw)
+        start_date = _normalize_to_naive_utc(datetime.datetime.fromisoformat(start_date_raw))
+        end_date = _normalize_to_naive_utc(datetime.datetime.fromisoformat(end_date_raw))
         if "T" not in end_date_raw:
             end_date += datetime.timedelta(days=1)
         calendar_name = arguments.get("calendar_name")
@@ -105,8 +110,8 @@ async def handle_call_tool(
         return [types.TextContent(type="text", text=str(events))]
 
     elif name == "create_event":
-        start = datetime.datetime.fromisoformat(arguments["start"])
-        end = datetime.datetime.fromisoformat(arguments["end"])
+        start = _normalize_to_naive_utc(datetime.datetime.fromisoformat(arguments["start"]))
+        end = _normalize_to_naive_utc(datetime.datetime.fromisoformat(arguments["end"]))
         await asyncio.to_thread(
             caldav_wrapper.create_event,
             arguments["calendar_name"],

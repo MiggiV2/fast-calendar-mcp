@@ -2,28 +2,21 @@ import os
 import datetime
 from typing import List, Optional
 import caldav
-from caldav.elements import dav, cdav
-from sqlalchemy.orm import Session
-from src.db import Calendar, Event, SessionLocal, init_db
 import icalendar
-from dateutil import parser
-from dateutil.rrule import rrulestr
-import pytz
+import recurring_ical_events
+from src.db import Calendar, CalendarObject, SessionLocal
+
 
 class CalDAVWrapper:
     def __init__(self):
         self.base_url = os.getenv("CALDAV_BASE_URL")
         self.username = os.getenv("CALDAV_USERNAME")
         self.password = os.getenv("CALDAV_PASSWORD")
-        
+
         if not all([self.base_url, self.username, self.password]):
             raise ValueError("CALDAV credentials not set in environment variables")
 
-        self.client = caldav.DAVClient(
-            url=self.base_url,
-            username=self.username,
-            password=self.password
-        )
+        self.client = caldav.DAVClient(url=self.base_url, username=self.username, password=self.password)
         # Attempt to find principal, handling both root URL and direct principal URL
         try:
             self.principal = self.client.principal()
@@ -34,13 +27,9 @@ class CalDAVWrapper:
             # However, the user error suggests 405 Method Not Allowed on Propfind.
             # This often happens if the URL points to a resource that doesn't support PROPFIND at root,
             # or if we need to append a slash.
-            if not self.base_url.endswith('/'):
-                 self.client = caldav.DAVClient(
-                    url=self.base_url + '/',
-                    username=self.username,
-                    password=self.password
-                )
-                 self.principal = self.client.principal()
+            if not self.base_url.endswith("/"):
+                self.client = caldav.DAVClient(url=self.base_url + "/", username=self.username, password=self.password)
+                self.principal = self.client.principal()
             else:
                 raise
 
@@ -50,7 +39,6 @@ class CalDAVWrapper:
         try:
             calendars = self.principal.calendars()
             for cal in calendars:
-                # Update or create calendar in DB
                 db_cal = session.query(Calendar).filter(Calendar.url == str(cal.url)).first()
                 if not db_cal:
                     db_cal = Calendar(name=cal.name or "Unknown", url=str(cal.url))
@@ -62,54 +50,19 @@ class CalDAVWrapper:
                         db_cal.name = cal.name
                         session.commit()
 
-                # Sync events — wipe and reinsert to handle recurring event changes cleanly
                 events = cal.events()
-                session.query(Event).filter(Event.calendar_id == db_cal.id).delete()
+                session.query(CalendarObject).filter(CalendarObject.calendar_id == db_cal.id).delete()
 
                 for event in events:
                     try:
-                        ical_data = event.data
-                        cal_obj = icalendar.Calendar.from_ical(ical_data)
-                        
-                        for component in cal_obj.walk():
-                            if component.name == "VEVENT":
-                                uid = str(component.get('uid'))
-                                summary = str(component.get('summary', ''))
-                                description = str(component.get('description', ''))
-                                location = str(component.get('location', ''))
-                                
-                                dtstart = component.get('dtstart').dt
-                                dtend = component.get('dtend').dt if component.get('dtend') else dtstart
-
-                                # Normalize to UTC naive datetime
-                                if isinstance(dtstart, datetime.datetime):
-                                    if dtstart.tzinfo:
-                                        dtstart = dtstart.astimezone(pytz.UTC).replace(tzinfo=None)
-                                elif isinstance(dtstart, datetime.date):
-                                    dtstart = datetime.datetime.combine(dtstart, datetime.time.min)
-
-                                if isinstance(dtend, datetime.datetime):
-                                    if dtend.tzinfo:
-                                        dtend = dtend.astimezone(pytz.UTC).replace(tzinfo=None)
-                                elif isinstance(dtend, datetime.date):
-                                    dtend = datetime.datetime.combine(dtend, datetime.time.min)
-
-                                rrule_prop = component.get('rrule')
-                                rrule_str = rrule_prop.to_ical().decode('utf-8') if rrule_prop else None
-                                session.add(Event(
-                                    calendar_id=db_cal.id,
-                                    uid=uid,
-                                    summary=summary,
-                                    description=description,
-                                    start=dtstart,
-                                    end=dtend,
-                                    location=location,
-                                    rrule=rrule_str
-                                ))
+                        calendar_object = _to_calendar_object(event.data)
                     except Exception as e:
                         print(f"Error syncing event {event}: {e}")
                         continue
-                
+                    if calendar_object:
+                        calendar_object.calendar_id = db_cal.id
+                        session.add(calendar_object)
+
                 session.commit()
 
         except Exception as e:
@@ -126,55 +79,54 @@ class CalDAVWrapper:
         finally:
             session.close()
 
-    def list_events(self, start_date: datetime.datetime, end_date: datetime.datetime, calendar_name: Optional[str] = None) -> List[dict]:
+    def list_events(
+        self, start_date: datetime.datetime, end_date: datetime.datetime, calendar_name: Optional[str] = None
+    ) -> List[dict]:
         session = SessionLocal()
         try:
-            base_query = session.query(Event).join(Calendar)
+            query = (
+                session.query(CalendarObject)
+                .join(Calendar)
+                .filter(
+                    CalendarObject.first_start < end_date,
+                    (CalendarObject.last_end == None) | (CalendarObject.last_end >= start_date),
+                )
+            )
             if calendar_name:
-                base_query = base_query.filter(Calendar.name == calendar_name)
+                query = query.filter(Calendar.name == calendar_name)
 
+            range_start = start_date.replace(tzinfo=datetime.timezone.utc)
+            range_end = end_date.replace(tzinfo=datetime.timezone.utc)
             results = []
+            for obj in query.all():
+                ical = icalendar.Calendar.from_ical(obj.ics)
+                for occurrence in recurring_ical_events.of(ical).between(range_start, range_end):
+                    if str(occurrence.get("status", "")).upper() == "CANCELLED":
+                        continue
+                    results.append(_occurrence_to_dict(occurrence, obj))
 
-            # Non-recurring events: simple date range filter
-            for e in base_query.filter(Event.rrule == None, Event.start >= start_date, Event.start <= end_date).all():
-                results.append(self._event_to_dict(e, e.start, e.end))
-
-            # Recurring events: expand occurrences within range at query time
-            for e in base_query.filter(Event.rrule != None).all():
-                duration = e.end - e.start
-                rule = rrulestr(e.rrule, dtstart=e.start, ignoretz=True)
-                for occ in rule.between(start_date, end_date, inc=True):
-                    results.append(self._event_to_dict(e, occ, occ + duration))
-
-            return results
+            return sorted(results, key=lambda e: e["start"])
         finally:
             session.close()
 
-    def _event_to_dict(self, e: "Event", start: datetime.datetime, end: datetime.datetime) -> dict:
-        return {
-            "uid": e.uid,
-            "summary": e.summary,
-            "description": e.description,
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "location": e.location,
-            "calendar": e.calendar.name
-        }
-
-    def create_event(self, calendar_name: str, summary: str, start: datetime.datetime, end: datetime.datetime, description: str = "", location: str = ""):
+    def create_event(
+        self,
+        calendar_name: str,
+        summary: str,
+        start: datetime.datetime,
+        end: datetime.datetime,
+        description: str = "",
+        location: str = "",
+    ):
         # Create on server first
         cal = self._get_dav_calendar(calendar_name)
         if not cal:
             raise ValueError(f"Calendar '{calendar_name}' not found on server")
 
         cal.save_event(
-            dtstart=start,
-            dtend=end,
-            summary=summary,
-            description=description,
-            location=location
+            dtstart=_as_utc(start), dtend=_as_utc(end), summary=summary, description=description, location=location
         )
-        
+
         # Trigger sync to update local DB
         self.sync()
 
@@ -185,7 +137,7 @@ class CalDAVWrapper:
 
         event = cal.event_by_uid(uid)
         event.delete()
-        
+
         # Trigger sync
         self.sync()
 
@@ -195,3 +147,47 @@ class CalDAVWrapper:
             if cal.name == name:
                 return cal
         return None
+
+
+def _to_calendar_object(ics: str) -> Optional[CalendarObject]:
+    ical = icalendar.Calendar.from_ical(ics)
+    vevents = [c for c in ical.walk("VEVENT")]
+    if not vevents:
+        return None
+
+    recurring = any("RRULE" in v or "RDATE" in v for v in vevents)
+    return CalendarObject(
+        uid=str(vevents[0].get("uid")),
+        ics=ics if isinstance(ics, str) else ics.decode("utf-8"),
+        recurring=recurring,
+        first_start=min(_to_naive_utc(v.start) for v in vevents),
+        last_end=None if recurring else max(_to_naive_utc(v.end) for v in vevents),
+    )
+
+
+def _occurrence_to_dict(occurrence: icalendar.Event, obj: CalendarObject) -> dict:
+    return {
+        "uid": obj.uid,
+        "summary": str(occurrence.get("summary", "")),
+        "description": str(occurrence.get("description", "")),
+        "start": _to_naive_utc(occurrence.start).isoformat(),
+        "end": _to_naive_utc(occurrence.end).isoformat(),
+        "all_day": not isinstance(occurrence.start, datetime.datetime),
+        "recurring": obj.recurring,
+        "location": str(occurrence.get("location", "")),
+        "calendar": obj.calendar.name,
+    }
+
+
+def _to_naive_utc(value: datetime.date) -> datetime.datetime:
+    if not isinstance(value, datetime.datetime):
+        return datetime.datetime.combine(value, datetime.time.min)
+    if value.tzinfo is not None:
+        return value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _as_utc(value: datetime.datetime) -> datetime.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.timezone.utc)
+    return value

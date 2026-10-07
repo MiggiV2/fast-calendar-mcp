@@ -170,3 +170,14 @@ def test_resync_reflects_changes_to_a_series(wrapper_for):
     wrapper.sync()
 
     assert starts(wrapper.list_events(*OCTOBER)) == ["2026-10-06T07:00:00"]
+
+
+def test_rdate_before_series_start_is_listed(wrapper_for):
+    series_from_november = WEEKLY_STANDUP.replace("20261006T09", "20261103T09").replace(
+        "SUMMARY:Standup", "RDATE;TZID=Europe/Berlin:20261016T110000\nSUMMARY:Standup"
+    )
+    wrapper = wrapper_for(FakeDavCalendar("Work", "https://dav/work/", [vcalendar(series_from_november)]))
+
+    events = wrapper.list_events(*OCTOBER)
+
+    assert starts(events) == ["2026-10-16T09:00:00"]

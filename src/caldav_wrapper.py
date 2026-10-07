@@ -89,7 +89,7 @@ class CalDAVWrapper:
                 .join(Calendar)
                 .filter(
                     CalendarObject.first_start < end_date,
-                    (CalendarObject.last_end == None) | (CalendarObject.last_end >= start_date),
+                    CalendarObject.last_end.is_(None) | (CalendarObject.last_end >= start_date),
                 )
             )
             if calendar_name:
@@ -160,9 +160,20 @@ def _to_calendar_object(ics: str) -> Optional[CalendarObject]:
         uid=str(vevents[0].get("uid")),
         ics=ics if isinstance(ics, str) else ics.decode("utf-8"),
         recurring=recurring,
-        first_start=min(_to_naive_utc(v.start) for v in vevents),
+        first_start=min(_to_naive_utc(start) for v in vevents for start in _start_candidates(v)),
         last_end=None if recurring else max(_to_naive_utc(v.end) for v in vevents),
     )
+
+
+def _start_candidates(vevent: icalendar.Event) -> list[datetime.date]:
+    rdates = vevent.get("RDATE", [])
+    if not isinstance(rdates, list):
+        rdates = [rdates]
+    candidates = [vevent.start]
+    for rdate in rdates:
+        for value in rdate.dts:
+            candidates.append(value.dt[0] if isinstance(value.dt, tuple) else value.dt)
+    return candidates
 
 
 def _occurrence_to_dict(occurrence: icalendar.Event, obj: CalendarObject) -> dict:

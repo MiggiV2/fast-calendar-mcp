@@ -7,7 +7,9 @@ import mcp.types as types
 from src.caldav_wrapper import CalDAVWrapper
 from src.calendar_time import calendar_timezone, to_naive_utc
 from src.db import init_db
+from src.webdav_storage import WebDAVStorage
 import logging
+import os
 
 # Initialize DB
 init_db()
@@ -19,14 +21,100 @@ except Exception as e:
     logging.error(f"Failed to initialize CalDAV wrapper: {e}")
     caldav_wrapper = None
 
+
+def _storage_from_env(prefix: str, writable: bool) -> Optional[WebDAVStorage]:
+    url = os.getenv(f"{prefix}_URL")
+    if not url:
+        return None
+    username = os.getenv("WEBDAV_USERNAME") or os.getenv("CALDAV_USERNAME")
+    password = os.getenv(f"{prefix}_PASSWORD") or os.getenv("CALDAV_PASSWORD")
+    return WebDAVStorage(url, username, password, writable=writable)
+
+
+notes_storage = _storage_from_env("WEBDAV_NOTES", writable=False)
+drafts_storage = _storage_from_env("WEBDAV_DRAFTS", writable=True)
+
 server = Server("fast-calendar-mcp")
 
 def _time_description(label: str) -> str:
     return f"{label} (ISO 8601). Without an offset it is read as {calendar_timezone().key} local time"
 
+
+def _path_schema(description: str, required: bool = True, **extra_properties) -> dict:
+    return {
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": description}, **extra_properties},
+        "required": ["path", *extra_properties] if required else list(extra_properties),
+    }
+
+
+def _file_tools() -> list[types.Tool]:
+    file_path = "File path relative to the storage root, as returned by the list tool, e.g. 'Rezepte/Pizza.md'"
+    directory = "Directory relative to the storage root, '' or omitted for the root. Folders end with '/'"
+    tools = []
+    if notes_storage:
+        tools += [
+            types.Tool(
+                name="notes_list",
+                description="List files and folders in the read-only notes storage",
+                inputSchema=_path_schema(directory, required=False),
+            ),
+            types.Tool(
+                name="notes_read",
+                description="Read a file from the read-only notes storage",
+                inputSchema=_path_schema(file_path),
+            ),
+        ]
+    if drafts_storage:
+        tools += [
+            types.Tool(
+                name="drafts_list",
+                description="List files and folders in the writable drafts storage",
+                inputSchema=_path_schema(directory, required=False),
+            ),
+            types.Tool(
+                name="drafts_read",
+                description="Read a file from the writable drafts storage",
+                inputSchema=_path_schema(file_path),
+            ),
+            types.Tool(
+                name="drafts_write",
+                description="Create or overwrite a file in the writable drafts storage",
+                inputSchema=_path_schema(
+                    file_path, content={"type": "string", "description": "Text content to write"}
+                ),
+            ),
+            types.Tool(
+                name="drafts_delete",
+                description="Delete a file from the writable drafts storage",
+                inputSchema=_path_schema(file_path),
+            ),
+        ]
+    return tools
+
+
+async def _call_file_tool(name: str, arguments: dict) -> str:
+    area, action = name.split("_", 1)
+    storage = notes_storage if area == "notes" else drafts_storage
+    if storage is None:
+        raise ValueError(f"{area} storage is not configured")
+    path = arguments.get("path", "")
+    if action == "list":
+        return "\n".join(await asyncio.to_thread(storage.list, path))
+    if action == "read":
+        return await asyncio.to_thread(storage.read, path)
+    if action == "write":
+        await asyncio.to_thread(storage.write, path, arguments["content"])
+        return f"Wrote {path}"
+    await asyncio.to_thread(storage.delete, path)
+    return f"Deleted {path}"
+
+
+FILE_TOOL_NAMES = {"notes_list", "notes_read", "drafts_list", "drafts_read", "drafts_write", "drafts_delete"}
+
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
-    return [
+    return _file_tools() + [
         types.Tool(
             name="calendar_list",
             description="List all available calendars",
@@ -90,6 +178,9 @@ async def handle_list_tools() -> list[types.Tool]:
 async def handle_call_tool(
     name: str, arguments: dict | None
 ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    if name in FILE_TOOL_NAMES:
+        return [types.TextContent(type="text", text=await _call_file_tool(name, arguments or {}))]
+
     if not caldav_wrapper:
         return [types.TextContent(type="text", text="CalDAV wrapper not initialized. Check credentials.")]
 

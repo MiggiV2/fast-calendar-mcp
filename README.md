@@ -28,6 +28,8 @@ CALDAV_PASSWORD=your-password
 
 The base URL above is the Nextcloud form. Nextcloud users with 2FA enabled must use an app password as `CALDAV_PASSWORD`.
 
+`CALENDAR_TIMEZONE` (IANA name, default `Europe/Berlin`) sets the local time of the tools: event times are returned in it with their UTC offset (e.g. `2026-10-08T14:00:00+02:00`), and tool arguments without an offset are read in it. All-day events are returned as plain dates.
+
 ## Running the Server
 
 ### Docker Compose (Recommended)

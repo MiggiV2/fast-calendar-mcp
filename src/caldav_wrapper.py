@@ -4,6 +4,7 @@ from typing import List, Optional
 import caldav
 import icalendar
 import recurring_ical_events
+from src.calendar_time import to_calendar_iso
 from src.db import Calendar, CalendarObject, SessionLocal
 
 
@@ -103,9 +104,9 @@ class CalDAVWrapper:
                 for occurrence in recurring_ical_events.of(ical).between(range_start, range_end):
                     if str(occurrence.get("status", "")).upper() == "CANCELLED":
                         continue
-                    results.append(_occurrence_to_dict(occurrence, obj))
+                    results.append((_to_naive_utc(occurrence.start), _occurrence_to_dict(occurrence, obj)))
 
-            return sorted(results, key=lambda e: e["start"])
+            return [event for _, event in sorted(results, key=lambda r: r[0])]
         finally:
             session.close()
 
@@ -181,8 +182,8 @@ def _occurrence_to_dict(occurrence: icalendar.Event, obj: CalendarObject) -> dic
         "uid": obj.uid,
         "summary": str(occurrence.get("summary", "")),
         "description": str(occurrence.get("description", "")),
-        "start": _to_naive_utc(occurrence.start).isoformat(),
-        "end": _to_naive_utc(occurrence.end).isoformat(),
+        "start": to_calendar_iso(occurrence.start),
+        "end": to_calendar_iso(occurrence.end),
         "all_day": not isinstance(occurrence.start, datetime.datetime),
         "recurring": obj.recurring,
         "location": str(occurrence.get("location", "")),

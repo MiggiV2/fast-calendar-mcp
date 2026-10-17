@@ -34,12 +34,12 @@ END:VEVENT
     events = wrapper.list_events(*OCTOBER)
 
     assert starts(events) == [
-        "2026-10-06T07:00:00",
-        "2026-10-14T12:00:00",
-        "2026-10-20T07:00:00",
-        "2026-10-27T08:00:00",
+        "2026-10-06T09:00:00+02:00",
+        "2026-10-14T14:00:00+02:00",
+        "2026-10-20T09:00:00+02:00",
+        "2026-10-27T09:00:00+01:00",
     ]
-    assert [e["summary"] for e in events if e["start"] == "2026-10-14T12:00:00"] == ["Standup (moved)"]
+    assert [e["summary"] for e in events if e["start"] == "2026-10-14T14:00:00+02:00"] == ["Standup (moved)"]
 
 
 def test_excluded_occurrence_is_not_listed(wrapper_for):
@@ -50,7 +50,7 @@ def test_excluded_occurrence_is_not_listed(wrapper_for):
 
     events = wrapper.list_events(*OCTOBER)
 
-    assert "2026-10-20T07:00:00" not in starts(events)
+    assert "2026-10-20T09:00:00+02:00" not in starts(events)
     assert len(events) == 3
 
 
@@ -69,7 +69,7 @@ END:VEVENT
 
     events = wrapper.list_events(*OCTOBER)
 
-    assert "2026-10-13T07:00:00" not in starts(events)
+    assert "2026-10-13T09:00:00+02:00" not in starts(events)
     assert len(events) == 3
 
 
@@ -78,7 +78,7 @@ def test_series_keeps_local_wall_clock_time_across_dst_change(wrapper_for):
 
     events = wrapper.list_events(datetime.datetime(2026, 10, 26), datetime.datetime(2026, 11, 1))
 
-    assert [(e["start"], e["end"]) for e in events] == [("2026-10-27T08:00:00", "2026-10-27T08:30:00")]
+    assert [(e["start"], e["end"]) for e in events] == [("2026-10-27T09:00:00+01:00", "2026-10-27T09:30:00+01:00")]
 
 
 def test_additional_rdate_occurrence_is_listed(wrapper_for):
@@ -87,7 +87,7 @@ def test_additional_rdate_occurrence_is_listed(wrapper_for):
 
     events = wrapper.list_events(*OCTOBER)
 
-    assert "2026-10-16T09:00:00" in starts(events)
+    assert "2026-10-16T11:00:00+02:00" in starts(events)
 
 
 def test_series_ends_at_until(wrapper_for):
@@ -96,7 +96,7 @@ def test_series_ends_at_until(wrapper_for):
 
     events = wrapper.list_events(*OCTOBER)
 
-    assert starts(events) == ["2026-10-06T07:00:00", "2026-10-13T07:00:00"]
+    assert starts(events) == ["2026-10-06T09:00:00+02:00", "2026-10-13T09:00:00+02:00"]
 
 
 def test_yearly_all_day_event_recurs_on_its_date(wrapper_for):
@@ -114,7 +114,7 @@ END:VEVENT
     events = wrapper.list_events(*OCTOBER)
 
     assert [(e["start"], e["end"], e["all_day"]) for e in events] == [
-        ("2026-10-09T00:00:00", "2026-10-10T00:00:00", True)
+        ("2026-10-09", "2026-10-10", True)
     ]
 
 
@@ -169,7 +169,7 @@ def test_resync_reflects_changes_to_a_series(wrapper_for):
 
     wrapper.sync()
 
-    assert starts(wrapper.list_events(*OCTOBER)) == ["2026-10-06T07:00:00"]
+    assert starts(wrapper.list_events(*OCTOBER)) == ["2026-10-06T09:00:00+02:00"]
 
 
 def test_rdate_before_series_start_is_listed(wrapper_for):
@@ -180,4 +180,13 @@ def test_rdate_before_series_start_is_listed(wrapper_for):
 
     events = wrapper.list_events(*OCTOBER)
 
-    assert starts(events) == ["2026-10-16T09:00:00"]
+    assert starts(events) == ["2026-10-16T11:00:00+02:00"]
+
+
+def test_event_times_follow_configured_calendar_timezone(wrapper_for, monkeypatch):
+    monkeypatch.setenv("CALENDAR_TIMEZONE", "America/New_York")
+    wrapper = wrapper_for(FakeDavCalendar("Work", "https://dav/work/", [vcalendar(WEEKLY_STANDUP)]))
+
+    events = wrapper.list_events(datetime.datetime(2026, 10, 6), datetime.datetime(2026, 10, 7))
+
+    assert [(e["start"], e["end"]) for e in events] == [("2026-10-06T03:00:00-04:00", "2026-10-06T03:30:00-04:00")]

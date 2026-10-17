@@ -5,6 +5,7 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 import mcp.types as types
 from src.caldav_wrapper import CalDAVWrapper
+from src.calendar_time import calendar_timezone, to_naive_utc
 from src.db import init_db
 import logging
 
@@ -20,10 +21,8 @@ except Exception as e:
 
 server = Server("fast-calendar-mcp")
 
-def _normalize_to_naive_utc(dt: datetime.datetime) -> datetime.datetime:
-    if dt.tzinfo is not None and dt.utcoffset() is not None:
-        return dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-    return dt
+def _time_description(label: str) -> str:
+    return f"{label} (ISO 8601). Without an offset it is read as {calendar_timezone().key} local time"
 
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
@@ -38,12 +37,12 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="calendar_list_events",
-            description="List events within a date range",
+            description="List events within a date range. Event times are returned in local time with UTC offset",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "start_date": {"type": "string", "description": "Start date (ISO 8601, e.g., 2023-01-01T00:00:00)"},
-                    "end_date": {"type": "string", "description": "End date (ISO 8601)"},
+                    "start_date": {"type": "string", "description": _time_description("Start date, e.g. 2023-01-01T00:00:00")},
+                    "end_date": {"type": "string", "description": _time_description("End date")},
                     "calendar_name": {"type": "string", "description": "Optional calendar name to filter by"},
                 },
                 "required": ["start_date", "end_date"],
@@ -57,8 +56,8 @@ async def handle_list_tools() -> list[types.Tool]:
                 "properties": {
                     "calendar_name": {"type": "string", "description": "Name of the calendar"},
                     "summary": {"type": "string", "description": "Event title"},
-                    "start": {"type": "string", "description": "Start time (ISO 8601)"},
-                    "end": {"type": "string", "description": "End time (ISO 8601)"},
+                    "start": {"type": "string", "description": _time_description("Start time")},
+                    "end": {"type": "string", "description": _time_description("End time")},
                     "description": {"type": "string", "description": "Event description"},
                     "location": {"type": "string", "description": "Event location"},
                 },
@@ -101,8 +100,8 @@ async def handle_call_tool(
     elif name in ("calendar_list_events", "list_events"):
         start_date_raw = arguments["start_date"]
         end_date_raw = arguments["end_date"]
-        start_date = _normalize_to_naive_utc(datetime.datetime.fromisoformat(start_date_raw))
-        end_date = _normalize_to_naive_utc(datetime.datetime.fromisoformat(end_date_raw))
+        start_date = to_naive_utc(datetime.datetime.fromisoformat(start_date_raw))
+        end_date = to_naive_utc(datetime.datetime.fromisoformat(end_date_raw))
         if "T" not in end_date_raw:
             end_date += datetime.timedelta(days=1)
         calendar_name = arguments.get("calendar_name")
@@ -110,8 +109,8 @@ async def handle_call_tool(
         return [types.TextContent(type="text", text=str(events))]
 
     elif name in ("calendar_create_event", "calendar_create", "create_event"):
-        start = _normalize_to_naive_utc(datetime.datetime.fromisoformat(arguments["start"]))
-        end = _normalize_to_naive_utc(datetime.datetime.fromisoformat(arguments["end"]))
+        start = to_naive_utc(datetime.datetime.fromisoformat(arguments["start"]))
+        end = to_naive_utc(datetime.datetime.fromisoformat(arguments["end"]))
         await asyncio.to_thread(
             caldav_wrapper.create_event,
             arguments["calendar_name"],

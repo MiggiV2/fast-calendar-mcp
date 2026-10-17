@@ -97,6 +97,26 @@ def test_storage_errors_are_returned_as_tool_errors(storages):
     assert result.content[0].text == "not found: missing.md"
 
 
+@pytest.fixture
+def no_credentials_in_env(monkeypatch):
+    for name in ("WEBDAV_USERNAME", "CALDAV_USERNAME", "WEBDAV_NOTES_PASSWORD", "CALDAV_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WEBDAV_NOTES_URL", "https://cloud.example/remote.php/dav/files/alice/Notes/")
+
+
+def test_storage_with_url_but_without_credentials_is_disabled_with_an_error(no_credentials_in_env, caplog):
+    assert mcp_server._storage_from_env("WEBDAV_NOTES", writable=False) is None
+    assert "WEBDAV_NOTES" in caplog.text
+    assert "credentials" in caplog.text
+
+
+def test_storage_falls_back_to_caldav_credentials(no_credentials_in_env, monkeypatch):
+    monkeypatch.setenv("CALDAV_USERNAME", "alice")
+    monkeypatch.setenv("CALDAV_PASSWORD", "secret")
+
+    assert mcp_server._storage_from_env("WEBDAV_NOTES", writable=False) is not None
+
+
 def test_file_tools_work_without_caldav(storages, monkeypatch):
     monkeypatch.setattr(mcp_server, "caldav_wrapper", None)
 

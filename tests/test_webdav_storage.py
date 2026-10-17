@@ -152,6 +152,12 @@ def test_read_only_storage_refuses_writes_and_deletes():
     assert server.requests == []
 
 
+@pytest.mark.parametrize("username, password", [(None, "secret"), ("alice", None), ("", "secret"), ("alice", "")])
+def test_missing_credentials_are_rejected_on_construction(username, password):
+    with pytest.raises(ValueError, match="credentials"):
+        WebDAVStorage(BASE_URL, username, password, writable=False)
+
+
 def test_requests_use_basic_auth():
     storage, server = storage_with(lambda request: httpx.Response(200, content=b""))
 

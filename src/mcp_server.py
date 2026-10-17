@@ -28,7 +28,11 @@ def _storage_from_env(prefix: str, writable: bool) -> Optional[WebDAVStorage]:
         return None
     username = os.getenv("WEBDAV_USERNAME") or os.getenv("CALDAV_USERNAME")
     password = os.getenv(f"{prefix}_PASSWORD") or os.getenv("CALDAV_PASSWORD")
-    return WebDAVStorage(url, username, password, writable=writable)
+    try:
+        return WebDAVStorage(url, username, password, writable=writable)
+    except ValueError as e:
+        logging.error(f"{prefix} storage disabled: {e}")
+        return None
 
 
 notes_storage = _storage_from_env("WEBDAV_NOTES", writable=False)

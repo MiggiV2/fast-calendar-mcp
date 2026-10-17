@@ -30,6 +30,8 @@ class WebDAVStorage:
         client: httpx.Client | None = None,
         timeout: float = 30.0,
     ):
+        if not username or not password:
+            raise ValueError("WebDAV credentials not set")
         self.base_url = base_url if base_url.endswith("/") else base_url + "/"
         self.base_path = unquote(urlsplit(self.base_url).path)
         self.writable = writable

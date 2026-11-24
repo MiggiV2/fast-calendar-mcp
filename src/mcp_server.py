@@ -14,12 +14,38 @@ import os
 # Initialize DB
 init_db()
 
-# Initialize CalDAV Wrapper
-try:
-    caldav_wrapper = CalDAVWrapper()
-except Exception as e:
-    logging.error(f"Failed to initialize CalDAV wrapper: {e}")
-    caldav_wrapper = None
+caldav_wrapper: Optional[CalDAVWrapper] = None
+_caldav_init_lock = asyncio.Lock()
+
+
+async def ensure_caldav_wrapper() -> Optional[CalDAVWrapper]:
+    global caldav_wrapper
+    async with _caldav_init_lock:
+        if caldav_wrapper is None:
+            wrapper = await asyncio.to_thread(CalDAVWrapper)
+            print("CalDAV wrapper initialized, performing initial sync...")
+            try:
+                await asyncio.to_thread(wrapper.sync)
+                print("Initial sync complete.")
+            except Exception as e:
+                print(f"Initial sync failed: {e}")
+            caldav_wrapper = wrapper
+        return caldav_wrapper
+
+
+async def connect_with_retry(initial_delay: float = 5, max_delay: float = 300) -> None:
+    delay = initial_delay
+    while True:
+        try:
+            await ensure_caldav_wrapper()
+            return
+        except ValueError as e:
+            logging.error(f"CalDAV disabled: {e}")
+            return
+        except Exception as e:
+            logging.error(f"Failed to initialize CalDAV wrapper, retrying in {delay}s: {e}")
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, max_delay)
 
 
 def _storage_from_env(prefix: str, writable: bool) -> Optional[WebDAVStorage]:
@@ -39,6 +65,7 @@ notes_storage = _storage_from_env("WEBDAV_NOTES", writable=False)
 drafts_storage = _storage_from_env("WEBDAV_DRAFTS", writable=True)
 
 server = Server("fast-calendar-mcp")
+
 
 def _time_description(label: str) -> str:
     return f"{label} (ISO 8601). Without an offset it is read as {calendar_timezone().key} local time"
@@ -84,9 +111,7 @@ def _file_tools() -> list[types.Tool]:
             types.Tool(
                 name="drafts_write",
                 description="Create or overwrite a file in the writable drafts storage",
-                inputSchema=_path_schema(
-                    file_path, content={"type": "string", "description": "Text content to write"}
-                ),
+                inputSchema=_path_schema(file_path, content={"type": "string", "description": "Text content to write"}),
             ),
             types.Tool(
                 name="drafts_delete",
@@ -116,6 +141,7 @@ async def _call_file_tool(name: str, arguments: dict) -> str:
 
 FILE_TOOL_NAMES = {"notes_list", "notes_read", "drafts_list", "drafts_read", "drafts_write", "drafts_delete"}
 
+
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     return _file_tools() + [
@@ -133,7 +159,10 @@ async def handle_list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "start_date": {"type": "string", "description": _time_description("Start date, e.g. 2023-01-01T00:00:00")},
+                    "start_date": {
+                        "type": "string",
+                        "description": _time_description("Start date, e.g. 2023-01-01T00:00:00"),
+                    },
                     "end_date": {"type": "string", "description": _time_description("End date")},
                     "calendar_name": {"type": "string", "description": "Optional calendar name to filter by"},
                 },
@@ -175,8 +204,9 @@ async def handle_list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {},
             },
-        )
+        ),
     ]
+
 
 @server.call_tool()
 async def handle_call_tool(
@@ -185,11 +215,14 @@ async def handle_call_tool(
     if name in FILE_TOOL_NAMES:
         return [types.TextContent(type="text", text=await _call_file_tool(name, arguments or {}))]
 
-    if not caldav_wrapper:
-        return [types.TextContent(type="text", text="CalDAV wrapper not initialized. Check credentials.")]
+    try:
+        wrapper = await ensure_caldav_wrapper()
+    except Exception as e:
+        logging.error(f"Failed to initialize CalDAV wrapper: {e}")
+        return [types.TextContent(type="text", text=f"CalDAV wrapper not initialized: {e}")]
 
     if name in ("calendar_list", "list_calendars"):
-        calendars = await asyncio.to_thread(caldav_wrapper.list_calendars)
+        calendars = await asyncio.to_thread(wrapper.list_calendars)
         return [types.TextContent(type="text", text=str(calendars))]
 
     elif name in ("calendar_list_events", "list_events"):
@@ -200,40 +233,34 @@ async def handle_call_tool(
         if "T" not in end_date_raw:
             end_date += datetime.timedelta(days=1)
         calendar_name = arguments.get("calendar_name")
-        events = await asyncio.to_thread(caldav_wrapper.list_events, start_date, end_date, calendar_name)
+        events = await asyncio.to_thread(wrapper.list_events, start_date, end_date, calendar_name)
         return [types.TextContent(type="text", text=str(events))]
 
     elif name in ("calendar_create_event", "calendar_create", "create_event"):
         start = to_naive_utc(datetime.datetime.fromisoformat(arguments["start"]))
         end = to_naive_utc(datetime.datetime.fromisoformat(arguments["end"]))
         await asyncio.to_thread(
-            caldav_wrapper.create_event,
+            wrapper.create_event,
             arguments["calendar_name"],
             arguments["summary"],
             start,
             end,
             arguments.get("description", ""),
-            arguments.get("location", "")
+            arguments.get("location", ""),
         )
         return [types.TextContent(type="text", text="Event created successfully")]
 
     elif name in ("calendar_delete_event", "calendar_delete", "delete_event"):
-        await asyncio.to_thread(caldav_wrapper.delete_event, arguments["calendar_name"], arguments["uid"])
+        await asyncio.to_thread(wrapper.delete_event, arguments["calendar_name"], arguments["uid"])
         return [types.TextContent(type="text", text="Event deleted successfully")]
 
     elif name in ("calendar_sync", "sync_calendar"):
-        await asyncio.to_thread(caldav_wrapper.sync)
+        await asyncio.to_thread(wrapper.sync)
         return [types.TextContent(type="text", text="Calendar synced successfully")]
 
     else:
         raise ValueError(f"Unknown tool: {name}")
 
+
 async def run():
-    # Initial sync
-    if caldav_wrapper:
-        print("Performing initial sync...")
-        try:
-            await asyncio.to_thread(caldav_wrapper.sync)
-            print("Initial sync complete.")
-        except Exception as e:
-            print(f"Initial sync failed: {e}")
+    await connect_with_retry()
